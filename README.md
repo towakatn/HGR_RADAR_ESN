@@ -141,3 +141,8 @@ python run_all.py
 | `single_RF.py` / `single_SVM.py` / `single_Ridge.py` | Readouts for single-reservoir mode |
 | `multi_feat_esn_readout.py` | Multi-feature ESN readout |
 | `multi_classifier_readout.py` | Multi-classifier readout |
+
+## Citation
+T. Sano and G. Tanaka, Hand Gesture Recognition from Doppler Radar Signals Using Echo State Networks, International Joint Conference on Neural Networks (WCCI 2026), accepted
+
+Preprint available on arXiv: https://arxiv.org/abs/2602.04436v1
