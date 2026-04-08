@@ -1,4 +1,4 @@
-# HGR_Radar — Radar-Based Hand Gesture Recognition (Reservoir Computing)
+# Hand Gesture Recognition from Doppler Radar Signals Using Echo State Networks
 
 This project classifies hand gestures captured by radar sensors using reservoir computing with an Echo State Network (ESN).  
 It evaluates multiple readout methods on two radar datasets: **Dop-NET** and **Soli**.
