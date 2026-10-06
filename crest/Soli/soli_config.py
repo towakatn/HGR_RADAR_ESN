@@ -40,7 +40,7 @@ SINGLE_RESERVOIR_CONFIG = {
     'input_scaling': 0.2,  # 入力スケーリング
     'density': 0.1,  # リザバー接続密度
     'leakage_rate': 0.05,  # リーク率
-    'bias_scaling': 0.05,  # バイアススケーリング
+    'bias_scaling': 0.0,  # バイアス無効
     'node_selection_ratio': 1.0,  # ノード選択率（100%）
     'random_state': 42,  # 乱数シード
 }
@@ -114,6 +114,31 @@ RIDGE_CONFIG = {
 EVAL_CONFIG = {
     'n_splits': 10,  # K分割交差検証の分割数
     'test_size': 0.5,  # 50:50分割のテスト比率
+}
+
+# Controlled topology/fusion comparison. Each single-map baseline also uses N.
+# Parallel methods divide N equally over DTM/RTM x the selected channels.
+FUSION_EXPERIMENT_CONFIG = {
+    'total_nodes': 400,
+    'regularization': RIDGE_READOUT_CONFIG['regularization'],  # Existing RR_L ridge convention.
+    'reservoir_params': {
+        'spectral_radius': 0.95,
+        'input_scaling': 0.2,
+        'density': 0.1,
+        'leakage_rate': 0.05,
+        'bias_scaling': 0.0,
+        'temperature': 1.0,
+        'standardize_inputs': True,
+    },
+    'seeds': [42, 43, 44],
+    'protocols': ['50_50', '10fold', 'session_split', 'loso'],
+    'n_splits': 10,
+    'split_seed': 42,
+    'n_trials': 1,  # Fixed shared parameters; no inner hyperparameter search.
+    'parameter_candidates': None,  # For >1 trials, supply exactly n_trials dicts.
+    'late_fusion_methods': ['mean', 'product', 'geometric', 'max'],
+    'inner_validation_size': 0.25,
+    'output_dir': None,  # Default: timestamped Soli/results/fusion_* directory.
 }
 
 # ================================================================================

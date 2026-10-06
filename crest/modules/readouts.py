@@ -9,6 +9,27 @@ from .classifiers import create_classifier
 from .reservoir import VariableLengthESN
 
 
+def fit_ridge_readout(features, targets, regularization, verbose=False):
+    """Fit the original RR_L/RR_N readout; return weights shaped (classes, features).
+
+    Keep the original inverse/pseudoinverse fallback and multiplication order.
+    The regularizer is lambda * I, without sample-count scaling.
+    """
+    n_features = features.shape[1]
+    PsiT_Psi = np.dot(features.T, features)
+    lambda_I = regularization * np.eye(n_features)
+
+    try:
+        inv_matrix = np.linalg.inv(PsiT_Psi + lambda_I)
+    except np.linalg.LinAlgError:
+        if verbose:
+            print("警告: 逆行列計算失敗、疑似逆行列を使用")
+        inv_matrix = np.linalg.pinv(PsiT_Psi + lambda_I)
+
+    W_temp = np.dot(inv_matrix, features.T)
+    return np.dot(W_temp, targets).T
+
+
 class ClassifierESNReadout:
     """
     Classifier-Based ESN Readout
@@ -353,19 +374,7 @@ class FeatESNReadout:
         if verbose:
             print(f"教師信号 Y: {Y.shape}")
 
-        n_samples, n_features = Psi.shape
-        PsiT_Psi = np.dot(Psi.T, Psi)
-        lambda_I = self.regularization * np.eye(n_features)
-
-        try:
-            inv_matrix = np.linalg.inv(PsiT_Psi + lambda_I)
-        except np.linalg.LinAlgError:
-            if verbose:
-                print("警告: 逆行列計算失敗、疑似逆行列を使用")
-            inv_matrix = np.linalg.pinv(PsiT_Psi + lambda_I)
-
-        W_temp = np.dot(inv_matrix, Psi.T)
-        self.W_out = np.dot(W_temp, Y).T
+        self.W_out = fit_ridge_readout(Psi, Y, self.regularization, verbose=verbose)
 
         readout_time = time.time() - start_time
 
@@ -404,7 +413,7 @@ class SingleReservoirESN:
 
     def __init__(self, channels=[0, 1, 2, 3],
                  n_reservoir=500, spectral_radius=0.95, input_scaling=0.2,
-                 density=0.1, leakage_rate=0.05, bias_scaling=0.05,
+                 density=0.1, leakage_rate=0.05, bias_scaling=0.0,
                  node_selection_ratio=1.0,
                  classifier_type='rf', random_state=42,
                  classifier_config=None):
@@ -430,7 +439,7 @@ class SingleReservoirESN:
         self.input_scaling = input_scaling if input_scaling is not None else 0.2
         self.density = density if density is not None else 0.1
         self.leakage_rate = leakage_rate if leakage_rate is not None else 0.05
-        self.bias_scaling = bias_scaling if bias_scaling is not None else 0.05
+        self.bias_scaling = bias_scaling if bias_scaling is not None else 0.0
         self.node_selection_ratio = node_selection_ratio if node_selection_ratio is not None else 1.0
         self.random_state = random_state if random_state is not None else 42
 

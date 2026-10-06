@@ -28,6 +28,7 @@ sys.path.insert(0, str(DATASET_DIR.parent))
 from modules.data_loaders import DualDataTypeLoader
 from modules.readouts import FeatESNReadout, ClassifierESNReadout, SingleReservoirESN
 from modules.evaluation import run_soli_evaluation
+from run_fusion import main as run_fusion_comparison
 from soli_config import (
     DATA_CONFIG, MULTI_RESERVOIR_CONFIG, SINGLE_RESERVOIR_CONFIG,
     RF_CONFIG, SVM_CONFIG, RIDGE_CONFIG, RIDGE_READOUT_CONFIG,
@@ -69,7 +70,8 @@ def get_methods(multi_reservoir_config=None, single_reservoir_config=None):
     ]
 
 
-def main(data_config=None, multi_reservoir_config=None, single_reservoir_config=None):
+def main(data_config=None, multi_reservoir_config=None, single_reservoir_config=None,
+         include_fusion=True, fusion_config=None):
     print("=" * 80)
     print("全リードアウト手法の包括的評価")
     print("=" * 80)
@@ -158,8 +160,17 @@ def main(data_config=None, multi_reservoir_config=None, single_reservoir_config=
     print(f"終了時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
 
+    if include_fusion:
+        all_results['fusion_comparison'] = run_fusion_comparison(
+            data_config=data_config, fusion_config=fusion_config,
+            loaded_data=(X_md, X_rtm, y, metadata),
+        )
+
     return all_results
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description='Run legacy Soli methods and the controlled fusion suite.')
+    parser.add_argument('--legacy-only', action='store_true', help='run only the original seven methods')
+    main(include_fusion=not parser.parse_args().legacy_only)

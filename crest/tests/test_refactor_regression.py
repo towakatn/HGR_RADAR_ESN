@@ -263,7 +263,7 @@ class EntrypointTests(unittest.TestCase):
                 patch.object(entry, 'run_soli_evaluation', side_effect=evaluate), \
                 contextlib.redirect_stdout(io.StringIO()):
             loader.return_value.load_gesture_data.return_value = md, rtm, y, metadata
-            results = entry.main(data, multi, single)
+            results = entry.main(data, multi, single, include_fusion=False)
             loader.assert_called_once_with(channels=data['channels'], base_dir=data['base_dir'])
             loader.return_value.load_gesture_data.assert_called_once_with(
                 max_samples_per_gesture_subject=7)
