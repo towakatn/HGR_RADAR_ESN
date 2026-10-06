@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-共通設定ファイル
+Dop-NET設定ファイル
 リザバーコンピューティングの全パラメータを管理
 """
+
+from pathlib import Path
 
 # ================================================================================
 # データ設定
 # ================================================================================
 
 DATA_CONFIG = {
-    'data_dir': 'Data/Training Data',
+    'data_dir': str(Path(__file__).resolve().parent / 'Data' / 'Training Data'),
     'class_names': ['Wave', 'Pinch', 'Swipe', 'Click'],
 }
 

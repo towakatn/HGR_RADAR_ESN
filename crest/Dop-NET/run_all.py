@@ -11,30 +11,35 @@
 """
 
 import sys
-import os
+from pathlib import Path
 import time
 from datetime import datetime
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+DATASET_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(DATASET_DIR))
+sys.path.insert(0, str(DATASET_DIR.parent))
 
-from modules.data_loader import RCDataLoader
+from modules.data_loaders import RCDataLoader
 from modules.reservoir_computer import prepare_rc_input
-from modules import RF, SVM, Ridge
-from modules.config import RESERVOIR_CONFIG, DATA_CONFIG
-from modules.evaluation import run_full_evaluation
+from modules.classifiers import classifier_factory
+from dopnet_config import RESERVOIR_CONFIG, DATA_CONFIG, RF_CONFIG, SVM_CONFIG, RIDGE_CONFIG
+from modules.evaluation import run_dopnet_evaluation
 
 
-def main():
+def main(data_config=None, reservoir_config=None):
     print("=" * 80)
     print("全リードアウト手法の包括的評価")
     print("=" * 80)
     print(f"開始時刻: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
 
+    data_config = DATA_CONFIG if data_config is None else data_config
+    reservoir_config = RESERVOIR_CONFIG if reservoir_config is None else reservoir_config
+
     # データ読み込み
     print("\n  データ読み込み中...", end=' ', flush=True)
-    loader = RCDataLoader(data_dir=DATA_CONFIG['data_dir'])
+    loader = RCDataLoader(data_dir=data_config['data_dir'])
     signals, labels, metadata = loader.load_all_data()
     X = prepare_rc_input(signals)
     y = np.array(labels)
@@ -42,15 +47,21 @@ def main():
 
     # 分類器リストを定義
     classifiers = [
-        (RF.get_name(), RF.create_classifier),
-        (SVM.get_name(), SVM.create_classifier),
-        (Ridge.get_name(), Ridge.create_classifier),
+        (RF_CONFIG['name'], classifier_factory('rf', {
+            key: RF_CONFIG[key] for key in ('n_estimators', 'n_jobs')
+        })),
+        (SVM_CONFIG['name'], classifier_factory('svm', {
+            key: SVM_CONFIG[key] for key in ('kernel', 'C', 'gamma')
+        })),
+        (RIDGE_CONFIG['name'], classifier_factory(
+            'ridge', {'alpha': RIDGE_CONFIG['alpha']}, use_random_state=False
+        )),
     ]
 
     # 全評価実行
     print()
     start_time = time.time()
-    results = run_full_evaluation(X, y, metadata, RESERVOIR_CONFIG, classifiers)
+    results = run_dopnet_evaluation(X, y, metadata, reservoir_config, classifiers)
     total_time = time.time() - start_time
 
     # サマリー表示

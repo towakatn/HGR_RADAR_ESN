@@ -9,38 +9,32 @@ It evaluates multiple readout methods on two radar datasets: **Dop-NET** and **S
 ## Project Structure
 
 ```
-HGR_Radar/
+crest/
 ├── README.md
 ├── requirements.txt
-├── Dop-NET/                  # For the Dop-NET dataset
-│   ├── run_all.py            # Run all readout evaluations
-│   ├── Data/
-│   │   ├── Training Data/    # Training data for subjects A-F (.mat)
-│   │   └── Test Data/        # Test data (.mat)
-│   └── modules/
-│       ├── config.py          # Parameter settings
-│       ├── data_loader.py     # MATLAB data loader
-│       ├── reservoir_computer.py  # ESN reservoir
-│       ├── evaluation.py      # Evaluation pipeline
-│       ├── RF.py              # Random Forest readout
-│       ├── SVM.py             # SVM readout
-│       └── Ridge.py           # Ridge readout
-│
-└── Soli/                     # For the Google Soli dataset
-    ├── run_all.py            # Run all readout evaluations
-    ├── separate_channel_dtm_converter.py  # DTM conversion
-    ├── separate_channel_rtm_converter.py  # RTM conversion
-    ├── SoliData/dsp/         # Raw data (HDF5)
-    ├── DTM/                  # Doppler-Time Map (per channel)
-    ├── RTM/                  # Range-Time Map (per channel)
-    └── modules/
-        ├── config.py              # Parameter settings
-        ├── dataloader.py          # Dual data-type loader
-        ├── reservoir.py           # Variable-length ESN reservoir
-        ├── evaluation.py          # Evaluation pipeline
-        ├── multi_*.py             # Readouts for multi-reservoir setup
-        ├── single_*.py            # Readouts for single-reservoir setup
-        └── multi_feat_esn_readout.py
+├── modules/                  # Shared implementation
+│   ├── data_loaders.py        # Dop-NET and Soli data loaders
+│   ├── reservoir_computer.py  # Dop-NET sparse ESN
+│   ├── reservoir.py           # Soli dense ESN
+│   ├── readouts.py            # Multi/single ESN readout models
+│   ├── classifiers.py         # RF, SVM, and Ridge factories
+│   ├── evaluation.py          # Dataset-specific evaluation protocols
+│   └── converters.py          # Soli DTM/RTM conversion
+├── Dop-NET/
+│   ├── run_all.py             # Pass Dop-NET settings to shared modules
+│   ├── dopnet_config.py       # Dataset/model/classifier settings
+│   └── Data/
+│       ├── Training Data/     # Subjects A-F (.mat)
+│       └── Test Data/
+├── Soli/
+│   ├── run_all.py             # Pass Soli settings to shared modules
+│   ├── soli_config.py         # Dataset/model/classifier settings
+│   ├── separate_channel_dtm_converter.py
+│   ├── separate_channel_rtm_converter.py
+│   ├── SoliData/dsp/          # Raw data (.h5)
+│   ├── DTM/                  # Doppler-Time Map per channel
+│   └── RTM/                  # Range-Time Map per channel
+└── tests/                    # Regression tests
 ```
 
 
@@ -115,32 +109,41 @@ python run_all.py
 ```
 ---
 
-## Directory Details
+## Shared Modules and Settings
 
-### `Dop-NET/modules/`
+Edit `Dop-NET/dopnet_config.py` or `Soli/soli_config.py` to change dataset paths,
+reservoir settings, or classifier settings. Each `run_all.py` passes those values
+to the shared modules. Default paths are relative to the dataset directory, so
+scripts can also be run from `crest/`:
 
-| File | Role |
-|---------|------|
-| `config.py` | Defines parameters for reservoir, classifiers, and evaluation |
-| `data_loader.py` | Loads MATLAB `.mat` files and converts them to spectrograms |
-| `reservoir_computer.py` | ESN implementation (sparse weight generation and state update) |
-| `evaluation.py` | Common pipeline for four evaluation protocols |
-| `RF.py` / `SVM.py` / `Ridge.py` | Factory functions for each readout classifier |
+```bash
+python Dop-NET/run_all.py
+python Soli/run_all.py
+python Soli/separate_channel_dtm_converter.py
+python Soli/separate_channel_rtm_converter.py
+```
 
-### `Soli/modules/`
+The two ESN implementations retain their original weight initialization and
+random-number behavior. Dop-NET keeps a one-direction 50:50 split with seed
+`reservoir_seed + 1` and a new reservoir per CV fold. Soli keeps its two-direction
+50:50 split with seed 42 and its original model initialization order. Both keep
+their original session and subject splits, result keys, and method order.
 
-| File | Role |
-|---------|------|
-| `config.py` | Defines parameters for both multi and single settings |
-| `dataloader.py` | Loads 4-channel DTM + RTM data |
-| `reservoir.py` | Variable-length time-series ESN (`VariableLengthESN`) |
-| `single_reservoir.py` | Wrapper for single-reservoir mode |
-| `evaluation.py` | Evaluation pipeline |
-| `multi_RR_L.py` / `multi_RR_N.py` | Ridge-regression readouts (linear / nonlinear) |
-| `multi_SVM.py` / `multi_RF.py` | SVM / RF readouts for multi-reservoir mode |
-| `single_RF.py` / `single_SVM.py` / `single_Ridge.py` | Readouts for single-reservoir mode |
-| `multi_feat_esn_readout.py` | Multi-feature ESN readout |
-| `multi_classifier_readout.py` | Multi-classifier readout |
+For Python callers, Dop-NET's `main(data_config=None, reservoir_config=None)`
+and Soli's `main(data_config=None, multi_reservoir_config=None,
+single_reservoir_config=None)` accept replacement configuration dictionaries.
+Soli's `get_methods(...)` builds the seven readout classes and their arguments;
+`run_soli_evaluation(...)` can also evaluate an individual model.
+
+Imports previously under `Dop-NET/modules` or `Soli/modules` now come from
+`crest/modules`. Use `modules.data_loaders`, `modules.readouts`, and
+`modules.evaluation` from `crest/`.
+
+Run regression tests from `crest/` with the project environment:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 .venv/bin/python -m unittest discover -s tests -v
+```
 
 ## Citation
 T. Sano and G. Tanaka, Hand Gesture Recognition from Doppler Radar Signals Using Echo State Networks, International Joint Conference on Neural Networks (WCCI 2026), accepted
