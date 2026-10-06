@@ -1,0 +1,28 @@
+# Downloaded datasets and converted radar maps
+*.h5
+/Dop-NET/Data/
+/Soli/SoliData/
+/Soli/DTM/
+/Soli/RTM/
+/HAR-Dataset-Project/
+
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Generated results and logs
+results/
+outputs/
+logs/
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
