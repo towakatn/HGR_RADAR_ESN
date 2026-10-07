@@ -21,7 +21,8 @@ crest/
 │   ├── readouts.py            # Multi/single ESN readout models
 │   ├── classifiers.py         # RF, SVM, and Ridge factories
 │   ├── fusion.py              # Controlled reservoir/fusion architectures
-│   ├── fusion_evaluation.py   # Paired splits, shared search, and result exports
+│   ├── fusion_evaluation.py   # Paired splits, per-method optimization, and exports
+│   ├── bayesian_optimization.py # Fixed-budget Gaussian-process search
 │   ├── har_data.py            # 16-bit HAR room selection and DTM/RTM projection
 │   ├── har_download.py        # Fetch one room with LFS size/SHA-256 verification
 │   ├── har_config.py          # Shared same-room, same-distance HAR settings
@@ -164,15 +165,24 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 .venv/bin/python -m unittest discover -
 Soli also compares single-map baselines, Single–Early, Parallel–Early,
 Parallel–Intermediate, and Parallel–Late with a shared total-node budget,
 the existing linear Ridge regression (RR_L), regularization, data splits, and
-hyperparameter candidates. From `crest/`:
+search budget. Each reported method, including each Late fusion rule, receives
+60 Bayesian optimization evaluations by default and selects its own parameters.
+Node allocation and regularization remain fixed; reservoir bias is zero.
+From `crest/`:
 
 ```bash
 python Soli/run_fusion.py
 python Soli/run_fusion.py --quick
+python Soli/run_fusion.py --search fixed
 ```
 
 `Soli/run_all.py` runs this comparison after the original seven methods;
 `python Soli/run_all.py --legacy-only` runs only those original methods.
+`--quick` uses fixed parameters. Bayesian search uses a shared inner holdout,
+12 initial evaluations and 48 Gaussian-process Expected Improvement evaluations,
+with no early stopping. The 60-trial budget is a practical default, not an
+empirical guarantee of accuracy or convergence. Optimized comparisons include
+method-specific parameter choices; use `--search fixed` for matched parameters.
 See [Soli/FUSION_EXPERIMENTS.md](Soli/FUSION_EXPERIMENTS.md) for the protocols,
 Late fusion rules, fairness constraints, output files, and research references.
 
@@ -183,8 +193,18 @@ identifier and one distance identifier. The defaults H1 and D1 (1.5 m) select
 600 recordings, with 300 training and 300 test samples per direction.
 It applies the same five comparison families as Soli, with 400 total
 nodes, existing RR_L readouts, regularization 0.1, zero bias, and seeds 42/43/44.
-The default protocol is a stratified 50:50 sample split evaluated in both
-directions. Subjects can occur in both partitions; this measures recognition
+Its default also independently optimizes each reported method with the same
+60-trial budget using only outer-training data.
+The default HAR protocol is a one-direction stratified 50:50 sample split.
+Use `--bidirectional` to evaluate both directions. Download a single distance
+with `python -m modules.har_download --room 2 --distance 1`; evaluate each room
+separately with `python -m modules.har_experiment --room 2 --distance 1 --one-way`.
+For a distance comparison within H1, run the same commands with `--room 1` and
+each of `--distance 1`, `--distance 2`, and `--distance 3` (1.5 m, 3.5 m, and 5.5 m).
+H1 has 600 recordings at each distance. Keep the node budget, ridge penalty,
+split seed, reservoir seeds, and 60-trial budget equal, and tune each distance
+independently using its own training data.
+Subjects can occur in both partitions; this measures recognition
 within the selected room and distance rather than generalization to new subjects,
 rooms, or distances.
 

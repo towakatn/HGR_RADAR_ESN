@@ -104,6 +104,72 @@ class HARDownloadTests(unittest.TestCase):
         for path, original in untouched.items():
             self.assertEqual(path.read_bytes(), original)
 
+    def test_distance_download_excludes_other_distances_and_keeps_separate_provenance(self):
+        chosen = self.save_pointer("S1_H2_A1_D1_1.npy")
+        other_distance = self.save_pointer("S1_H2_A1_D2_1.npy")
+        other_room = self.save_pointer("S1_H3_A1_D1_1.npy")
+        untouched = {path: path.read_bytes() for path in (other_distance, other_room)}
+
+        def download(path, pointer, commit):
+            self.assertEqual(path, chosen)
+            path.write_bytes(self.payload)
+            return len(self.payload)
+
+        with patch("modules.har_download.subprocess.check_output", return_value="a" * 40 + "\n"), \
+                patch("modules.har_download._fetch_blob", side_effect=download) as fetch, \
+                patch("builtins.print"):
+            manifest = download_har_room(self.base_dir, room=2, distance=1, workers=1)
+            resumed = download_har_room(self.base_dir, room=2, distance=1, workers=1)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(manifest, resumed)
+        self.assertEqual((manifest["room"], manifest["distance"], manifest["n_samples"]), (2, 1, 1))
+        self.assertEqual(set(manifest["blobs"]), {chosen.name})
+        self.assertTrue((self.base_dir / "results/download_H2_D1_manifest.json").exists())
+        self.assertFalse((self.base_dir / "results/download_H2_manifest.json").exists())
+        for path, original in untouched.items():
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_materialized_distance_inherits_room_hashes_and_repairs_empty_manifest(self):
+        files = [self.save_pointer(f"S1_H1_A1_D{distance}_1.npy") for distance in (1, 2)]
+
+        def download(path, pointer, commit):
+            path.write_bytes(self.payload)
+            return len(self.payload)
+
+        with patch("modules.har_download.subprocess.check_output", return_value="a" * 40 + "\n"), \
+                patch("modules.har_download._fetch_blob", side_effect=download) as fetch, \
+                patch("builtins.print"):
+            room_manifest = download_har_room(self.base_dir, room=1, workers=1)
+            distance_manifest = download_har_room(self.base_dir, room=1, distance=2, workers=1)
+            scoped_path = self.base_dir / "results/download_H1_D2_manifest.json"
+            # Older distance-specific calls could record no hashes when the
+            # payloads were already fetched by a room-wide download.
+            scoped_path.write_text(json.dumps(dict(distance_manifest, blobs={})))
+            repaired = download_har_room(self.base_dir, room=1, distance=2, workers=1)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(repaired, distance_manifest)
+        self.assertEqual(distance_manifest["distance"], 2)
+        self.assertEqual(distance_manifest["n_samples"], 1)
+        self.assertEqual(distance_manifest["blobs"], {files[1].name: self.pointer})
+        self.assertEqual(json.loads(scoped_path.read_text()), distance_manifest)
+        self.assertEqual(json.loads((self.base_dir / "results/download_H1_manifest.json").read_text()),
+                         room_manifest)
+
+    def test_distance_does_not_inherit_room_hashes_from_a_different_commit(self):
+        path = self.save_pointer("S1_H1_A1_D2_1.npy")
+        path.write_bytes(self.payload)
+        manifest_dir = self.base_dir / "results"
+        manifest_dir.mkdir()
+        (manifest_dir / "download_H1_manifest.json").write_text(json.dumps(dict(
+            dataset="HAR-mmWave 16-bit", room=1, source_commit="b" * 40,
+            n_samples=1, blobs={path.name: self.pointer})))
+        with patch("modules.har_download.subprocess.check_output", return_value="a" * 40 + "\n"), \
+                patch("modules.har_download._fetch_blob") as fetch, patch("builtins.print"):
+            manifest = download_har_room(self.base_dir, room=1, distance=2, workers=1)
+        fetch.assert_not_called()
+        self.assertEqual(manifest["source_commit"], "a" * 40)
+        self.assertEqual(manifest["blobs"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

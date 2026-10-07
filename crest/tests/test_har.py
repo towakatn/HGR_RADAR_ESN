@@ -220,7 +220,9 @@ class HARDataTests(unittest.TestCase):
             )
         self.assertEqual(results["configuration"]["classes"], [1, 10])
         self.assertEqual(results["configuration"]["readout"], "existing_RR_L")
-        self.assertEqual(len(results["records"]), 24)
+        self.assertEqual(len(results["records"]), 12)
+        self.assertEqual(len(results["splits"]), 1)
+        self.assertFalse(results["configuration"]["bidirectional_50_50"])
         for split in results["splits"]:
             train, test = set(split["train_indices"]), set(split["test_indices"])
             self.assertFalse(train & test)
@@ -237,7 +239,7 @@ class HARDataTests(unittest.TestCase):
             self.assertEqual(row["n_search_trials"], 0)
         with (destination / "split_manifest.csv").open(newline="") as stream:
             membership = list(csv.DictReader(stream))
-        self.assertEqual(len(membership), 16)
+        self.assertEqual(len(membership), 8)
         self.assertEqual({row["room"] for row in membership}, {"1"})
         self.assertEqual({row["distance"] for row in membership}, {"1"})
         self.assertEqual({row["repeat"] for row in membership}, {"1", "2", "3", "4"})

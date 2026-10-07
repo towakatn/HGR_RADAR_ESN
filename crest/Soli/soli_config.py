@@ -126,7 +126,6 @@ FUSION_EXPERIMENT_CONFIG = {
         'input_scaling': 0.2,
         'density': 0.1,
         'leakage_rate': 0.05,
-        'bias_scaling': 0.0,
         'temperature': 1.0,
         'standardize_inputs': True,
     },
@@ -134,8 +133,9 @@ FUSION_EXPERIMENT_CONFIG = {
     'protocols': ['50_50', '10fold', 'session_split', 'loso'],
     'n_splits': 10,
     'split_seed': 42,
-    'n_trials': 1,  # Fixed shared parameters; no inner hyperparameter search.
-    'parameter_candidates': None,  # For >1 trials, supply exactly n_trials dicts.
+    'search_strategy': 'bayesian',
+    'n_trials': 60,  # Same fixed search budget for every reported method.
+    'parameter_candidates': None,  # Used only by the optional shared_candidates mode.
     'late_fusion_methods': ['mean', 'product', 'geometric', 'max'],
     'inner_validation_size': 0.25,
     'output_dir': None,  # Default: timestamped Soli/results/fusion_* directory.

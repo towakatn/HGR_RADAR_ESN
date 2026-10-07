@@ -12,10 +12,14 @@ import numpy as np
 from sklearn.metrics import balanced_accuracy_score
 from sklearn.model_selection import GroupShuffleSplit, StratifiedKFold, train_test_split
 
+from .bayesian_optimization import (
+    DEFAULT_N_INITIAL_POINTS, DEFAULT_N_TRIALS, bayesian_optimize, validate_baseline,
+)
 from .fusion import FusionESN, LATE_FUSION_METHODS, fuse_probabilities
 
 
 PROTOCOLS = ("50_50", "10fold", "session_split", "loso")
+SEARCH_STRATEGIES = ("fixed", "shared_candidates", "bayesian")
 RESERVOIR_DEFAULTS = dict(spectral_radius=0.95, input_scaling=0.2, density=0.1,
                          leakage_rate=0.05, bias_scaling=0.0,
                          temperature=1.0, standardize_inputs=True)
@@ -58,7 +62,7 @@ def _split(protocol, fold, train, test):
 
 
 def make_soli_splits(y, metadata, *, protocols=PROTOCOLS, n_splits=10,
-                     split_seed=42, test_size=0.5):
+                     split_seed=42, test_size=0.5, bidirectional_50_50=True):
     """Create outer splits once, shared by all methods and reservoir seeds.
 
     The session protocol retains the existing loader's interpretation of the
@@ -66,6 +70,8 @@ def make_soli_splits(y, metadata, *, protocols=PROTOCOLS, n_splits=10,
     acquisition metadata before being described as separate recording sessions.
     """
     y = _validate_labels(y, metadata)
+    if not isinstance(bidirectional_50_50, (bool, np.bool_)):
+        raise ValueError("bidirectional_50_50 must be boolean")
     protocols = tuple(protocols)
     if not protocols or len(set(protocols)) != len(protocols) or set(protocols) - set(PROTOCOLS):
         raise ValueError(f"protocols must be unique members of {PROTOCOLS}")
@@ -76,8 +82,9 @@ def make_soli_splits(y, metadata, *, protocols=PROTOCOLS, n_splits=10,
         if protocol == "50_50":
             train, test = train_test_split(indices, test_size=test_size, stratify=y,
                                            random_state=int(split_seed))
-            splits.extend((_split(protocol, "pattern1", train, test),
-                           _split(protocol, "pattern2", test, train)))
+            splits.append(_split(protocol, "pattern1", train, test))
+            if bidirectional_50_50:
+                splits.append(_split(protocol, "pattern2", test, train))
         elif protocol == "10fold":
             if not isinstance(n_splits, Integral) or isinstance(n_splits, bool) or n_splits < 2:
                 raise ValueError("n_splits must be an integer >= 2")
@@ -147,9 +154,10 @@ def _align_probabilities(probabilities, model_classes, classes):
 
 
 def _evaluate_methods(train_maps, test_maps, y_train, y_test, classes, *,
-                      total_nodes, params, seed, late_methods):
+                      total_nodes, params, seed, late_methods, model_specs=None):
     results = []
-    for method, architecture, map_name in _model_specs(train_maps):
+    specs = _model_specs(train_maps) if model_specs is None else model_specs
+    for method, architecture, map_name in specs:
         model = FusionESN(architecture, total_nodes=total_nodes, random_state=seed,
                           map_name=map_name, **params)
         start = time.perf_counter()
@@ -222,6 +230,62 @@ def _select_common_params(maps, y, metadata, classes, outer, candidates, total_n
                       selected_candidate=best, trials=trials)
 
 
+def _evaluate_bayesian_methods(maps, y, metadata, classes, outer, train_maps, test_maps, *,
+                               total_nodes, base, seed, late_methods, n_trials,
+                               search_space, inner_validation_size, inner_split_seed, progress):
+    """Give every reported method its own identical-budget inner-only search."""
+    train, validation = _inner_split(y, metadata, outer, inner_split_seed, inner_validation_size)
+    if len(np.unique(y[train])) < 2:
+        raise ValueError("inner training split needs at least two classes")
+    inner_maps, validation_maps = _subset(maps, train), _subset(maps, validation)
+    rows, searches = [], []
+    for spec in _model_specs(maps):
+        method, architecture, _ = spec
+        rules = late_methods if architecture == "parallel_late" else (None,)
+        for rule in rules:
+            report_method = f"{method}/{rule}" if rule is not None else method
+            selected_rules = (rule,) if rule is not None else ()
+            if progress:
+                print(f"  Bayesian {report_method}: {n_trials} trials", flush=True)
+            evaluated = 0
+
+            def objective(parameters):
+                nonlocal evaluated
+                measurement = _evaluate_methods(
+                    inner_maps, validation_maps, y[train], y[validation], classes,
+                    total_nodes=total_nodes, params=parameters, seed=seed,
+                    late_methods=selected_rules, model_specs=[spec])[0]
+                accuracy, loss = measurement["accuracy"], measurement["log_loss"]
+                # Accuracy changes in steps of 1 / n_validation. This bounded
+                # secondary term is < half a step, so it only breaks ties.
+                # It makes temperature meaningful even for an Early readout.
+                score = accuracy - (loss / (1.0 + loss)) / (2 * len(validation))
+                evaluated += 1
+                if progress and (evaluated % 10 == 0 or evaluated == n_trials):
+                    print(f"    {report_method}: {evaluated}/{n_trials}", flush=True)
+                return dict(score=score, **{key: measurement[key] for key in (
+                    "accuracy", "balanced_accuracy", "log_loss", "brier_score")})
+
+            search_start = time.perf_counter()
+            selection = bayesian_optimize(objective, base_parameters=base, n_trials=n_trials,
+                                          random_state=seed, search_space=search_space)
+            search_seconds = time.perf_counter() - search_start
+            searches.append(dict(selection, method=report_method, architecture=architecture,
+                                 protocol=outer.protocol, fold=outer.fold, seed=seed,
+                                 optimizer_seed=seed, inner_split_seed=inner_split_seed,
+                                 train_indices=train.tolist(), validation_indices=validation.tolist(),
+                                 search_seconds=search_seconds))
+            # Refit the selected method on ALL outer training samples once.
+            result = _evaluate_methods(train_maps, test_maps, y[outer.train_indices],
+                                       y[outer.test_indices], classes, total_nodes=total_nodes,
+                                       params=selection["parameters"], seed=seed,
+                                       late_methods=selected_rules, model_specs=[spec])[0]
+            rows.append(dict(result, selected_candidate=selection["selected_candidate"],
+                             parameters=selection["parameters"], n_search_trials=n_trials,
+                             search_seconds=search_seconds))
+    return rows, searches
+
+
 def _summarize(records):
     grouped = defaultdict(list)
     for record in records:
@@ -263,16 +327,21 @@ def _contrasts(records):
 
 def run_fusion_comparison(maps, y, metadata, *, total_nodes=400, regularization=0.001,
                           reservoir_params=None, seeds=(42, 43, 44), protocols=PROTOCOLS,
-                          n_splits=10, split_seed=42, n_trials=1, parameter_candidates=None,
+                          n_splits=10, split_seed=42, n_trials=None, parameter_candidates=None,
                           late_fusion_methods=("mean", "product", "geometric", "max"),
-                          inner_validation_size=0.25, progress=True):
-    """Compare all methods on paired outer folds using shared parameters.
+                          inner_validation_size=0.25, progress=True, search_strategy=None,
+                          bayesian_search_space=None, bidirectional_50_50=True):
+    """Compare methods on paired outer folds with fixed or nested optimization.
 
-    One trial fixes the supplied parameters and performs no search. Multiple
-    trials evaluate the same candidate sequence on one common inner split, then
-    select ONE setting for all methods. The selection score averages the five
-    architecture families equally; individual single-map scores are averaged
-    inside their family. Outer test labels never select hyperparameters.
+    ``bayesian`` independently tunes each reported method, including every late
+    fusion rule, for exactly the same trial count (default 60). Nodes and lambda
+    are fixed across methods; biases are zero. Search uses one common inner
+    holdout and accuracy with log-loss tie breaking. Outer test samples never
+    enter preprocessing, readout fitting, or hyperparameter selection.
+
+    ``fixed`` evaluates supplied parameters without search. ``shared_candidates``
+    retains the legacy selection of one setting by mean architecture-family
+    accuracy. Without an explicit strategy, old calls keep that behavior.
     """
     y = _validate_labels(y, metadata)
     if not maps or any(len(sequences) != len(y) for sequences in maps.values()):
@@ -284,8 +353,20 @@ def run_fusion_comparison(maps, y, metadata, *, total_nodes=400, regularization=
         raise ValueError("seeds must be unique nonnegative integers")
     seeds = tuple(int(seed) for seed in seeds)
     protocols = tuple(protocols)
+    if search_strategy is None:
+        search_strategy = ("shared_candidates" if parameter_candidates is not None
+                           or (n_trials is not None and n_trials != 1) else "fixed")
+    if search_strategy not in SEARCH_STRATEGIES:
+        raise ValueError(f"search_strategy must be among {SEARCH_STRATEGIES}")
+    if n_trials is None:
+        n_trials = DEFAULT_N_TRIALS if search_strategy == "bayesian" else 1
     if not isinstance(n_trials, Integral) or isinstance(n_trials, bool) or n_trials < 1:
         raise ValueError("n_trials must be a positive integer")
+    n_trials = int(n_trials)
+    if search_strategy == "fixed" and n_trials != 1:
+        raise ValueError("fixed search_strategy requires n_trials=1")
+    if search_strategy != "bayesian" and bayesian_search_space is not None:
+        raise ValueError("bayesian_search_space requires search_strategy='bayesian'")
     if not 0 < inner_validation_size < 1:
         raise ValueError("inner_validation_size must be between zero and one")
     late_methods = tuple(late_fusion_methods)
@@ -296,12 +377,24 @@ def run_fusion_comparison(maps, y, metadata, *, total_nodes=400, regularization=
         if set(reservoir_params) - set(RESERVOIR_DEFAULTS):
             raise ValueError("unsupported reservoir_params key")
         base.update(reservoir_params)
-    if parameter_candidates is None:
-        if n_trials != 1:
-            raise ValueError("n_trials > 1 requires exactly n_trials shared parameter_candidates")
-        parameter_candidates = [{}]
-    if len(parameter_candidates) != n_trials:
-        raise ValueError("parameter_candidates length must equal n_trials")
+    search_space = None
+    if search_strategy == "bayesian":
+        if parameter_candidates is not None:
+            raise ValueError("bayesian search creates independent candidates; parameter_candidates must be None")
+        if base["bias_scaling"] != 0.0:
+            raise ValueError("bayesian comparisons require bias_scaling=0.0")
+        base["bias_scaling"] = 0.0
+        validated = FusionESN("single_early", total_nodes=total_nodes, **base)
+        base = {key: getattr(validated, key) for key in base}
+        search_space = validate_baseline(base, bayesian_search_space)
+        parameter_candidates = [{}]  # Validate the shared fixed/warm-start values.
+    else:
+        if parameter_candidates is None:
+            if n_trials != 1:
+                raise ValueError("n_trials > 1 requires exactly n_trials shared parameter_candidates")
+            parameter_candidates = [{}]
+        if len(parameter_candidates) != n_trials:
+            raise ValueError("parameter_candidates length must equal n_trials")
     candidates = []
     for candidate in parameter_candidates:
         if not isinstance(candidate, dict) or set(candidate) - CANDIDATE_KEYS:
@@ -312,7 +405,7 @@ def run_fusion_comparison(maps, y, metadata, *, total_nodes=400, regularization=
         params = {key: getattr(validated, key) for key in params}
         candidates.append(params)
     outer_splits = make_soli_splits(y, metadata, protocols=protocols, n_splits=n_splits,
-                                   split_seed=split_seed)
+                                   split_seed=split_seed, bidirectional_50_50=bidirectional_50_50)
     classes = np.unique(y)
     records, searches = [], []
     start = time.perf_counter()
@@ -321,27 +414,47 @@ def run_fusion_comparison(maps, y, metadata, *, total_nodes=400, regularization=
         for seed in seeds:
             if progress:
                 print(f"Fusion {split_index}/{len(outer_splits)}: {outer.protocol}/{outer.fold}, seed={seed}", flush=True)
-            selected = 0
-            if n_trials > 1:
-                selected, search = _select_common_params(maps, y, metadata, classes, outer, candidates,
-                                                         total_nodes, seed, inner_validation_size, int(split_seed))
-                searches.append(search)
-            rows = _evaluate_methods(train_maps, test_maps, y[outer.train_indices], y[outer.test_indices], classes,
-                                     total_nodes=total_nodes, params=candidates[selected], seed=seed,
-                                     late_methods=late_methods)
+            if search_strategy == "bayesian":
+                rows, method_searches = _evaluate_bayesian_methods(
+                    maps, y, metadata, classes, outer, train_maps, test_maps,
+                    total_nodes=total_nodes, base=base, seed=seed, late_methods=late_methods,
+                    n_trials=n_trials, search_space=search_space,
+                    inner_validation_size=inner_validation_size, inner_split_seed=int(split_seed),
+                    progress=progress)
+                searches.extend(method_searches)
+            else:
+                selected = 0
+                if n_trials > 1:
+                    selected, search = _select_common_params(maps, y, metadata, classes, outer, candidates,
+                                                             total_nodes, seed, inner_validation_size, int(split_seed))
+                    searches.append(search)
+                measured = _evaluate_methods(train_maps, test_maps, y[outer.train_indices], y[outer.test_indices], classes,
+                                            total_nodes=total_nodes, params=candidates[selected], seed=seed,
+                                            late_methods=late_methods)
+                rows = [dict(row, n_search_trials=n_trials if n_trials > 1 else 0,
+                             selected_candidate=selected, parameters=candidates[selected]) for row in measured]
             records.extend(dict(row, protocol=outer.protocol, fold=outer.fold, seed=seed,
                                 n_train=len(outer.train_indices), n_test=len(outer.test_indices),
-                                n_search_trials=n_trials if n_trials > 1 else 0,
-                                selected_candidate=selected, parameters=candidates[selected]) for row in rows)
+                                search_strategy=search_strategy) for row in rows)
     return dict(configuration=dict(total_nodes=int(total_nodes), map_names=list(maps),
                                    seeds=list(seeds), split_seed=int(split_seed), n_splits=int(n_splits),
-                                   protocols=list(protocols), n_trials=int(n_trials), parameter_candidates=candidates,
+                                   protocols=list(protocols), n_trials=n_trials,
+                                   bidirectional_50_50=bool(bidirectional_50_50),
+                                   search_strategy=search_strategy,
+                                   parameter_candidates=None if search_strategy == "bayesian" else candidates,
+                                   base_parameters=base, bayesian_search_space=search_space,
+                                   bayesian_n_initial_points=min(DEFAULT_N_INITIAL_POINTS, n_trials) if search_space else 0,
+                                   search_budget_unit="per reported method / outer fold / reservoir seed",
                                    late_fusion_methods=list(late_methods), inner_validation_size=inner_validation_size,
                                    n_samples=len(y), classes=classes.tolist(),
                                    readout="existing_RR_L",
                                    readout_implementation="modules.readouts.fit_ridge_readout",
                                    readout_objective="sum_sample_squared_error + lambda * squared_weight_norm",
-                                   search_selection="one shared candidate; equally weighted architecture families",
+                                   search_selection=("independent method parameters; maximum inner accuracy, "
+                                                     "then minimum inner log_loss" if search_strategy == "bayesian" else
+                                                     "one shared candidate; equally weighted architecture families"),
+                                   comparison_scope=("independently optimized methods; topology and tuning effects combined"
+                                                     if search_strategy == "bayesian" else "shared parameters"),
                                    session_identifier="filename third integer, as interpreted by existing loader"),
                 elapsed_seconds=time.perf_counter() - start,
                 splits=[dict(protocol=split.protocol, fold=split.fold,
@@ -411,7 +524,9 @@ def save_fusion_plot(results, output_dir):
         axis.invert_yaxis()
         axis.set_xlim(0, 108)
         axis.set_xticks(np.arange(0, 101, 20))
-        axis.set_xlabel("Accuracy (%) | error bars: standard deviation across folds and seeds")
+        dispersion = ("seeds" if protocol == "50_50" and not results["configuration"].get("bidirectional_50_50", True)
+                      else "folds and seeds")
+        axis.set_xlabel(f"Accuracy (%) | error bars: standard deviation across {dispersion}")
         axis.set_title(protocol)
         axis.grid(axis="x", alpha=0.2)
         axis.set_axisbelow(True)

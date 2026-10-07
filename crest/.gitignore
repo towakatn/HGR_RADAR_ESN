@@ -1,5 +1,7 @@
 # Downloaded datasets and converted radar maps
 *.h5
+*.npy
+*.zip
 /Dop-NET/Data/
 /Soli/SoliData/
 /Soli/DTM/

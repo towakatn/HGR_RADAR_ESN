@@ -56,8 +56,12 @@ def parse_args(argv=None):
     parser.add_argument('--seeds', help='comma-separated reservoir seeds, e.g. 42,43,44')
     parser.add_argument('--protocols', help='comma-separated: 50_50,10fold,session_split,loso')
     parser.add_argument('--n-splits', type=int, help='stratified CV fold count')
-    parser.add_argument('--trials', type=int, help='common hyperparameter candidate count; default 1')
-    parser.add_argument('--candidates', type=Path, help='JSON list of shared parameter dictionaries')
+    parser.add_argument('--search', choices=('fixed', 'shared_candidates', 'bayesian'),
+                        help='search strategy; default bayesian (quick: fixed)')
+    parser.add_argument('--trials', type=int,
+                        help='same evaluations per method; default 60 for Bayesian, 1 for fixed')
+    parser.add_argument('--candidates', type=Path,
+                        help='JSON list for shared_candidates; selects that mode unless --search is set')
     parser.add_argument('--max-samples', type=int, help='select filename sample index < this value per gesture/subject')
     parser.add_argument('--base-dir', type=Path, help='directory containing Soli DTM/RTM')
     parser.add_argument('--output-dir', type=Path, help='save JSON/CSV reports here')
@@ -69,9 +73,10 @@ def cli(argv=None):
     data, config = dict(DATA_CONFIG), dict(FUSION_EXPERIMENT_CONFIG)
     if args.quick:
         data['max_samples_per_gesture_subject'] = 2
-        config.update(total_nodes=32, seeds=[42], protocols=['50_50'], n_trials=1, parameter_candidates=None)
+        config.update(total_nodes=32, seeds=[42], protocols=['50_50'],
+                      search_strategy='fixed', n_trials=1, parameter_candidates=None)
     for arg_name, config_name in [('total_nodes', 'total_nodes'), ('regularization', 'regularization'),
-                                  ('n_splits', 'n_splits'), ('trials', 'n_trials')]:
+                                  ('n_splits', 'n_splits')]:
         value = getattr(args, arg_name)
         if value is not None:
             config[config_name] = value
@@ -82,6 +87,19 @@ def cli(argv=None):
     if args.candidates is not None:
         with args.candidates.open(encoding='utf-8') as handle:
             config['parameter_candidates'] = json.load(handle)
+        if args.search is None:
+            config['search_strategy'] = 'shared_candidates'
+        if args.trials is None:
+            config['n_trials'] = len(config['parameter_candidates'])
+    if args.search is not None:
+        config['search_strategy'] = args.search
+        if args.trials is None:
+            if args.search == 'fixed':
+                config['n_trials'] = 1
+            elif args.search == 'bayesian':
+                config['n_trials'] = 60
+    if args.trials is not None:
+        config['n_trials'] = args.trials
     if args.max_samples is not None:
         if args.max_samples < 1:
             raise ValueError('--max-samples must be positive')

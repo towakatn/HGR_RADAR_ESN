@@ -72,6 +72,22 @@ def main(data_config=None, fusion_config=None, loaded_data=None):
     config = deepcopy(FUSION_EXPERIMENT_CONFIG)
     if fusion_config is not None:
         config.update(fusion_config)
+        # A partial configuration written before Bayesian defaults was added
+        # still selects its explicitly requested fixed/candidate evaluation.
+        if 'search_strategy' not in fusion_config:
+            if fusion_config.get('parameter_candidates') is not None:
+                config['search_strategy'] = 'shared_candidates'
+                if 'n_trials' not in fusion_config:
+                    config['n_trials'] = len(fusion_config['parameter_candidates'])
+            elif 'n_trials' in fusion_config:
+                config['search_strategy'] = ('fixed' if fusion_config['n_trials'] in (None, 1)
+                                             else 'shared_candidates')
+        elif 'n_trials' not in fusion_config:
+            if config['search_strategy'] == 'fixed':
+                config['n_trials'] = 1
+            elif config['search_strategy'] == 'shared_candidates':
+                candidates = config.get('parameter_candidates')
+                config['n_trials'] = len(candidates) if candidates is not None else 1
     output_dir = config.pop('output_dir', None)
     if (not isinstance(data['room'], Integral) or isinstance(data['room'], bool)
             or data['room'] < 1):
@@ -108,13 +124,17 @@ def main(data_config=None, fusion_config=None, loaded_data=None):
         raise ValueError('Every selected recording must come from the single requested distance')
     if len(y) != len(metadata):
         raise ValueError('Labels and acquisition metadata must align')
-    source_manifest_path = Path(data['base_dir']) / 'results' / f'download_H{room}_manifest.json'
+    source_manifest_path = Path(data['base_dir']) / 'results' / f'download_H{room}_D{distance}_manifest.json'
+    if not source_manifest_path.exists():
+        source_manifest_path = Path(data['base_dir']) / 'results' / f'download_H{room}_manifest.json'
     source_manifest = None
     if source_manifest_path.exists():
         with source_manifest_path.open(encoding='utf-8') as handle:
             source_manifest = json.load(handle)
         if source_manifest.get('room') != room:
             raise ValueError('Download provenance must identify the selected room')
+        if source_manifest.get('distance', distance) != distance:
+            raise ValueError('Download provenance must identify the selected distance')
 
     print(f'\nHAR 16-bit within-room comparison (existing RR_L, no bias): '
           f'room H{room}, distance D{distance} ({DISTANCE_METERS[distance]} m), '
@@ -173,6 +193,18 @@ def parse_args(argv=None):
     parser.add_argument('--seeds', help='comma-separated reservoir seeds; default 42,43,44')
     parser.add_argument('--protocols', help='comma-separated: 50_50,10fold,loso; default 50_50')
     parser.add_argument('--n-splits', type=int, help='stratified CV fold count; default 10')
+    direction = parser.add_mutually_exclusive_group()
+    direction.add_argument('--one-way', dest='bidirectional_50_50', action='store_false',
+                           help='evaluate only the first stratified 50:50 split (default)')
+    direction.add_argument('--bidirectional', dest='bidirectional_50_50', action='store_true',
+                           help='evaluate both train/test directions for 50:50')
+    parser.set_defaults(bidirectional_50_50=None)
+    parser.add_argument('--search', choices=('fixed', 'shared_candidates', 'bayesian'),
+                        help='search strategy; default bayesian')
+    parser.add_argument('--trials', type=int,
+                        help='same evaluations per method; default 60 for Bayesian, 1 for fixed')
+    parser.add_argument('--candidates', type=Path,
+                        help='JSON list for shared_candidates; selects that mode unless --search is set')
     parser.add_argument('--output-dir', type=Path, help='directory for JSON, CSV, and plot outputs')
     return parser.parse_args(argv)
 
@@ -194,6 +226,24 @@ def cli(argv=None):
         config['seeds'] = [int(value.strip()) for value in args.seeds.split(',')]
     if args.protocols is not None:
         config['protocols'] = [value.strip() for value in args.protocols.split(',')]
+    if args.bidirectional_50_50 is not None:
+        config['bidirectional_50_50'] = args.bidirectional_50_50
+    if args.candidates is not None:
+        with args.candidates.open(encoding='utf-8') as handle:
+            config['parameter_candidates'] = json.load(handle)
+        if args.search is None:
+            config['search_strategy'] = 'shared_candidates'
+        if args.trials is None:
+            config['n_trials'] = len(config['parameter_candidates'])
+    if args.search is not None:
+        config['search_strategy'] = args.search
+        if args.trials is None:
+            if args.search == 'fixed':
+                config['n_trials'] = 1
+            elif args.search == 'bayesian':
+                config['n_trials'] = 60
+    if args.trials is not None:
+        config['n_trials'] = args.trials
     if args.output_dir is not None:
         config['output_dir'] = str(args.output_dir.resolve())
     return main(data, config)

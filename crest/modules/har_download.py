@@ -1,6 +1,6 @@
 """Download only a selected room's high-precision HAR arrays from Git LFS.
 
-Run from crest: python -m modules.har_download --room 1
+Run from crest: python -m modules.har_download --room 1 --distance 1
 Only the 16-bit folder is accessed. Each downloaded blob is checked against
 its committed LFS SHA256 and byte count before replacing its pointer file.
 """
@@ -45,10 +45,10 @@ def _fetch_blob(path, pointer, commit, retries=3):
     raise RuntimeError(f"Could not fetch {path.name}: {type(last_error).__name__}: {last_error}") from last_error
 
 
-def download_har_room(base_dir, *, room, workers=8):
-    """Materialize LFS pointers for one room, preserving other rooms and 1-bit data."""
+def download_har_room(base_dir, *, room, distance=None, workers=8):
+    """Materialize one room, optionally restricting it to one acquisition distance."""
     base_dir = Path(base_dir).resolve()
-    samples = discover_har_files(base_dir, room=room)
+    samples = discover_har_files(base_dir, room=room, distance=distance)
     if workers < 1:
         raise ValueError("workers must be positive")
     commit = subprocess.check_output(
@@ -61,20 +61,37 @@ def download_har_room(base_dir, *, room, workers=8):
         if pointer is not None:
             pending.append((path, pointer))
     total_bytes = sum(pointer["size"] for _, pointer in pending)
-    print(f"HAR H{room}: {len(samples)} 16-bit files, {len(pending)} pending, "
+    selection = f"H{room}" + (f"/D{distance}" if distance is not None else "")
+    print(f"HAR {selection}: {len(samples)} 16-bit files, {len(pending)} pending, "
           f"{total_bytes / 1e9:.2f} GB, source {commit}", flush=True)
     manifest_dir = base_dir / "results"
     manifest_dir.mkdir(exist_ok=True)
-    manifest_path = manifest_dir / f"download_H{room}_manifest.json"
+    distance_suffix = "" if distance is None else f"_D{distance}"
+    manifest_path = manifest_dir / f"download_H{room}{distance_suffix}_manifest.json"
     previous = {}
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text(encoding="utf-8"))
         if previous.get("source_commit") != commit:
             raise ValueError("Existing download manifest refers to a different dataset commit")
-    blobs = dict(previous.get("blobs", {}))
+    selected_names = {sample.path.name for sample in samples}
+    blobs = {name: pointer for name, pointer in previous.get("blobs", {}).items()
+             if name in selected_names}
+    # A room-wide download may already have materialized this distance. Retain
+    # its committed hashes rather than writing an empty distance manifest.
+    if distance is not None:
+        room_manifest_path = manifest_dir / f"download_H{room}_manifest.json"
+        if room_manifest_path.exists():
+            room_manifest = json.loads(room_manifest_path.read_text(encoding="utf-8"))
+            if (room_manifest.get("source_commit") == commit
+                    and room_manifest.get("room") == int(room)):
+                for name, pointer in room_manifest.get("blobs", {}).items():
+                    if name in selected_names:
+                        blobs.setdefault(name, pointer)
     blobs.update({path.name: pointer for path, pointer in pending})
     manifest = dict(dataset="HAR-mmWave 16-bit", room=int(room), source_commit=commit,
                     n_samples=len(samples), blobs=blobs)
+    if distance is not None:
+        manifest["distance"] = int(distance)
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     if not pending:
         return manifest
@@ -105,11 +122,13 @@ def download_har_room(base_dir, *, room, workers=8):
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--room", type=int, choices=(1, 2, 3, 4), required=True)
+    parser.add_argument("--distance", type=int, choices=(1, 2, 3),
+                        help="download only D1=1.5m, D2=3.5m or D3=5.5m; omitted: all distances")
     parser.add_argument("--base-dir", type=Path,
                         default=Path(__file__).resolve().parents[1] / "HAR-Dataset-Project")
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args(argv)
-    return download_har_room(args.base_dir, room=args.room, workers=args.workers)
+    return download_har_room(args.base_dir, room=args.room, distance=args.distance, workers=args.workers)
 
 
 if __name__ == "__main__":

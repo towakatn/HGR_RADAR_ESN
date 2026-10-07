@@ -83,7 +83,7 @@ class FusionArchitectureTests(unittest.TestCase):
         self.assertEqual(RESERVOIR_DEFAULTS["bias_scaling"], 0.0)
         for name in ("MULTI_RESERVOIR_CONFIG", "SINGLE_RESERVOIR_CONFIG"):
             self.assertEqual(getattr(config, name)["bias_scaling"], 0.0)
-        self.assertEqual(config.FUSION_EXPERIMENT_CONFIG["reservoir_params"]["bias_scaling"], 0.0)
+        self.assertEqual(config.FUSION_EXPERIMENT_CONFIG["reservoir_params"].get("bias_scaling", 0.0), 0.0)
         for architecture in ARCHITECTURES:
             with self.subTest(architecture=architecture):
                 parameters = dict(PARAMETERS)
